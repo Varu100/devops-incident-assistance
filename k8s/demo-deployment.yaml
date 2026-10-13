@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incident-demo
+  namespace: incident-lab
+  labels:
+    app: incident-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: incident-demo
+  template:
+    metadata:
+      labels:
+        app: incident-demo
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27.5
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 80
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 128Mi
