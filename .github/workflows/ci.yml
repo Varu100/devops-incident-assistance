@@ -1,0 +1,122 @@
+name: AI DevOps Incident Assistant CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: incident-assistant-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python Tests
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile Python files
+        run: python -m compileall -q app scripts tests
+
+      - name: Run unit tests
+        run: pytest -q
+
+  validate-kubernetes:
+    name: Validate Kubernetes Manifests
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install YAML parser
+        run: pip install PyYAML
+
+      - name: Validate YAML and RBAC
+        run: |
+          python - <<'PY'
+          import yaml
+
+          for path in [
+              "k8s/demo-deployment.yaml",
+              "k8s/rbac.yaml",
+          ]:
+              with open(path, encoding="utf-8") as f:
+                  docs = list(yaml.safe_load_all(f))
+              assert all(d is not None for d in docs)
+              print(f"Validated: {path}")
+
+          with open("k8s/rbac.yaml", encoding="utf-8") as f:
+              docs = list(yaml.safe_load_all(f))
+
+          assert all(
+              d.get("metadata", {}).get("namespace") == "incident-lab"
+              for d in docs
+          ), "RBAC resources must be namespace-scoped"
+
+          assert not any(
+              d.get("kind") == "ClusterRole" for d in docs
+          ), "ClusterRole is not permitted"
+
+          roles = [d for d in docs if d.get("kind") == "Role"]
+          assert len(roles) == 1
+
+          resources = {
+              r
+              for rule in roles[0].get("rules", [])
+              for r in rule.get("resources", [])
+          }
+
+          assert {
+              "pods",
+              "pods/log",
+              "events",
+              "deployments",
+          } <= resources
+
+          print("RBAC checks passed.")
+          PY
+
+  docker-build:
+    name: Build Docker Image
+    runs-on: self-hosted
+    needs: [test, validate-kubernetes]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image without pushing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ai-devops-incident-assistant:ci
